@@ -68,8 +68,9 @@ public class Login extends JFrame {
         final int id;
         final String name, email, password, role, purok;   // role: RESIDENT or STAFF
         String status;                                      // VERIFIED, PENDING or REJECTED
+        final boolean mustChangePassword;
 
-        Account(int id, String name, String email, String password, String role, String status, String purok) {
+        Account(int id, String name, String email, String password, String role, String status, String purok, boolean mustChangePassword) {
             this.id = id;
             this.name = name;
             this.email = email;
@@ -77,6 +78,7 @@ public class Login extends JFrame {
             this.role = role;
             this.status = status;
             this.purok = purok;
+            this.mustChangePassword = mustChangePassword;
         }
     }
 
@@ -89,7 +91,7 @@ public class Login extends JFrame {
 
     private static Account find(String email) {
         String sql = "SELECT u.id, u.full_name, u.email, "
-                + "u.password_hash, u.role, "
+                + "u.password_hash, u.role, u.must_change_password, "
                 + "r.status, r.purok "
                 + "FROM users u "
                 + "LEFT JOIN residents r ON u.id = r.user_id "
@@ -109,7 +111,8 @@ public class Login extends JFrame {
                             rs.getString("password_hash"),
                             rs.getString("role"),
                             rs.getString("status"),
-                            rs.getString("purok")
+                            rs.getString("purok"),
+                            rs.getBoolean("must_change_password")
                     );
                 }
             }
@@ -524,10 +527,85 @@ public class Login extends JFrame {
                 return;
             }
 
+            if (acc.mustChangePassword && "RESIDENT".equals(acc.role)) {
+                if (!requirePasswordChange(acc)) {
+                    return;
+                }
+            }
             open(acc);
 
         } finally {
             java.util.Arrays.fill(passwordChars, '\0');
+        }
+    }
+
+    /** Requires a resident to choose their own password after a staff reset. */
+    private boolean requirePasswordChange(Account acc) {
+        JPasswordField newPassword = new JPasswordField(20);
+        JPasswordField confirmPassword = new JPasswordField(20);
+        JPanel fields = new JPanel(new GridLayout(4, 1, 0, 7));
+        fields.add(new JLabel("New password (at least 8 characters):"));
+        fields.add(newPassword);
+        fields.add(new JLabel("Confirm new password:"));
+        fields.add(confirmPassword);
+        try {
+            while (true) {
+                int answer = JOptionPane.showConfirmDialog(this, fields,
+                        "Password change required", JOptionPane.OK_CANCEL_OPTION,
+                        JOptionPane.PLAIN_MESSAGE);
+                if (answer != JOptionPane.OK_OPTION) {
+                    return false; // Never open dashboard until changed.
+                }
+                char[] first = newPassword.getPassword();
+                char[] second = confirmPassword.getPassword();
+                try {
+                    if (first.length < 8) {
+                        JOptionPane.showMessageDialog(this,
+                                "Password must be at least 8 characters.");
+                        continue;
+                    }
+                    if (!java.util.Arrays.equals(first, second)) {
+                        JOptionPane.showMessageDialog(this, "Passwords do not match.");
+                        continue;
+                    }
+                    // Prevent using the staff-assigned temporary password again.
+                    if (BCrypt.checkpw(new String(first), acc.password)) {
+                        JOptionPane.showMessageDialog(this,
+                                "Choose a different password from your temporary password.");
+                        continue;
+                    }
+                    String hash = BCrypt.hashpw(new String(first), BCrypt.gensalt(12));
+                    String sql = "UPDATE users SET password_hash = ?, "
+                            + "must_change_password = 0 "
+                            + "WHERE id = ? AND role = 'RESIDENT' "
+                            + "AND must_change_password = 1";
+                    try (Connection conn = Db.get();
+                            PreparedStatement stmt = conn.prepareStatement(sql)) {
+                        stmt.setString(1, hash);
+                        stmt.setInt(2, acc.id);
+                        if (stmt.executeUpdate() != 1) {
+                            JOptionPane.showMessageDialog(this,
+                                    "Password change could not be saved. Please sign in again.");
+                            return false;
+                        }
+                    } catch (SQLException ex) {
+                        JOptionPane.showMessageDialog(this,
+                                "Unable to save password. Please try again.");
+                        return false;
+                    }
+                    JOptionPane.showMessageDialog(this,
+                            "Password changed successfully.");
+                    return true;
+                } finally {
+                    java.util.Arrays.fill(first, '\0');
+                    java.util.Arrays.fill(second, '\0');
+                    newPassword.setText("");
+                    confirmPassword.setText("");
+                }
+            }
+        } finally {
+            newPassword.setText("");
+            confirmPassword.setText("");
         }
     }
 

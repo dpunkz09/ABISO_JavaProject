@@ -879,7 +879,6 @@ public class StaffDashboard extends BaseDashboard {
         JButton changePassword = secondaryButton("Change Password");
         close.addActionListener(e -> d.dispose());
         changePassword.addActionListener(e -> openChangePasswordDialog(d, r));
-        
         JComponent actions;
         if (pending) {
             JButton decline = dangerButton("Decline");
@@ -1014,116 +1013,122 @@ public class StaffDashboard extends BaseDashboard {
 
     // ------------------------------------------------------------ CHANGE PASSWORD
     /**
-     * Opens a dialog for staff to change a resident's password.
+     * Allows staff to reset a resident password after an in-person identity check.
+     * The resident must set a personal password at next login.
      */
     private void openChangePasswordDialog(Window owner, Resident r) {
-        JDialog d = new JDialog(owner, "Change Password - " + r.name, Dialog.ModalityType.APPLICATION_MODAL);
+        JDialog d = new JDialog(owner, "Reset Password - " + r.name,
+                Dialog.ModalityType.APPLICATION_MODAL);
         d.setDefaultCloseOperation(JDialog.DISPOSE_ON_CLOSE);
-        
+
         JPasswordField newPassword = new JPasswordField();
         JPasswordField confirmPassword = new JPasswordField();
-        
-        // Style the password fields consistently with other input fields
-        newPassword.setFont(font(Font.PLAIN, 14));
-        newPassword.setBorder(BorderFactory.createCompoundBorder(
-            new javax.swing.border.LineBorder(LINE, 1, true),
-            new EmptyBorder(10, 14, 10, 14)));
-        
-        confirmPassword.setFont(font(Font.PLAIN, 14));
-        confirmPassword.setBorder(BorderFactory.createCompoundBorder(
-            new javax.swing.border.LineBorder(LINE, 1, true),
-            new EmptyBorder(10, 14, 10, 14)));
-        
+        for (JPasswordField field : new JPasswordField[]{newPassword, confirmPassword}) {
+            field.setFont(font(Font.PLAIN, 14));
+            field.setBorder(BorderFactory.createCompoundBorder(
+                    new javax.swing.border.LineBorder(LINE, 1, true),
+                    new EmptyBorder(10, 14, 10, 14)));
+        }
+
+        JCheckBox identityVerified = new JCheckBox(
+                "I verified this resident's identity using an accepted ID.");
+        identityVerified.setOpaque(false);
+        identityVerified.setFont(font(Font.PLAIN, 13));
+
         JButton cancel = secondaryButton("Cancel");
-        JButton save = primaryButton("Change Password");
-        
-        cancel.addActionListener(e -> d.dispose());
+        JButton save = primaryButton("Reset Password");
+        cancel.addActionListener(e -> {
+            newPassword.setText("");
+            confirmPassword.setText("");
+            d.dispose();
+        });
+
         save.addActionListener(e -> {
             char[] newPass = newPassword.getPassword();
             char[] confirmPass = confirmPassword.getPassword();
-            
             try {
-                // Validate passwords
-                if (newPass.length == 0) {
-                    throw new IllegalArgumentException("Please enter a new password.");
+                if (!identityVerified.isSelected()) {
+                    throw new IllegalArgumentException(
+                            "Verify the resident's identity before resetting the password.");
                 }
-                
-                if (newPass.length < 6) {
-                    throw new IllegalArgumentException("Password must be at least 6 characters long.");
+                if (newPass.length < 8) {
+                    throw new IllegalArgumentException(
+                            "Password must be at least 8 characters long.");
                 }
-                
                 if (!java.util.Arrays.equals(newPass, confirmPass)) {
                     throw new IllegalArgumentException("Passwords do not match.");
                 }
-                
-                // Change the password
-                if (attempt(d, () -> changeResidentPassword(r.userId, new String(newPass)))) {
-                    d.dispose();
-                    toast("Password changed", "New password set for " + r.name + ".", GREEN, "check");
+
+                int choice = JOptionPane.showConfirmDialog(d,
+                        "Reset the password for " + r.name + "?\n"
+                        + "The resident's current password will stop working.",
+                        "Confirm Password Reset", JOptionPane.YES_NO_OPTION,
+                        JOptionPane.WARNING_MESSAGE);
+                if (choice != JOptionPane.YES_OPTION) {
+                    return;
                 }
-                
+
+                if (attempt(d, () -> changeResidentPassword(r.userId,
+                        new String(newPass)))) {
+                    toast("Password reset", "New password set for " + r.name + ".",
+                            GREEN, "check");
+                    d.dispose();
+                }
             } catch (IllegalArgumentException ex) {
-                JOptionPane.showMessageDialog(d, ex.getMessage(), "Invalid Input", 
-                    JOptionPane.WARNING_MESSAGE);
+                JOptionPane.showMessageDialog(d, ex.getMessage(),
+                        "Invalid Input", JOptionPane.WARNING_MESSAGE);
             } finally {
-                // Clear sensitive data from memory
-                java.util.Arrays.fill(newPass, '0');
-                java.util.Arrays.fill(confirmPass, '0');
+                newPassword.setText("");
+                confirmPassword.setText("");
+                java.util.Arrays.fill(newPass, '\0');
+                java.util.Arrays.fill(confirmPass, '\0');
             }
         });
-        
+
         JComponent form = column(16,
-            column(4, 
-                heading("Change Password", 21, INK),
-                lbl("Set a new password for " + r.name + ". Make sure to inform them of the change.", 
-                    Font.PLAIN, 13, MUTED)),
-            labeled("New password", newPassword),
-            labeled("Confirm new password", confirmPassword),
-            buttons(cancel, save));
-        
+                column(4,
+                        heading("Reset Password", 21, INK),
+                        lbl("Verify " + r.name + "'s identity before setting a new password.",
+                                Font.PLAIN, 13, MUTED)),
+                identityVerified,
+                labeled("New password (at least 8 characters)", newPassword),
+                labeled("Confirm new password", confirmPassword),
+                buttons(cancel, save));
+
         showIn(d, form, owner);
         d.setVisible(true);
     }
-    
-    /**
-     * Changes a resident's password in the database using BCrypt hashing.
-     */
+
+    /** Saves a BCrypt hash for the selected resident only. */
     private void changeResidentPassword(int userId, String newPassword) {
+        if (staffId <= 0) {
+            throw new IllegalStateException("A valid staff session is required.");
+        }
         if (userId <= 0) {
             throw new IllegalArgumentException("Invalid user ID.");
         }
-        
-        if (newPassword == null || newPassword.trim().isEmpty()) {
-            throw new IllegalArgumentException("Password cannot be empty.");
+        if (newPassword == null || newPassword.length() < 8) {
+            throw new IllegalArgumentException(
+                    "Password must be at least 8 characters long.");
         }
-        
-        if (newPassword.length() < 6) {
-            throw new IllegalArgumentException("Password must be at least 6 characters long.");
-        }
-        
-        // Hash the new password with BCrypt
+
         String passwordHash = BCrypt.hashpw(newPassword, BCrypt.gensalt(12));
-        
-        String sql = "UPDATE users SET password_hash = ? WHERE id = ? AND role = 'RESIDENT'";
-        
+        String sql = "UPDATE users SET password_hash = ?, must_change_password = 1 "
+                + "WHERE id = ? AND role = 'RESIDENT'";
+
         try (Connection conn = Db.get();
                 PreparedStatement stmt = conn.prepareStatement(sql)) {
-            
             stmt.setString(1, passwordHash);
             stmt.setInt(2, userId);
-            
-            int rowsUpdated = stmt.executeUpdate();
-            
-            if (rowsUpdated != 1) {
+            if (stmt.executeUpdate() != 1) {
                 throw new IllegalStateException(
-                    "Could not update password. The resident account may not exist.");
+                        "Could not update password. The resident account may not exist.");
             }
-            
         } catch (IllegalStateException e) {
             throw e;
         } catch (Exception e) {
             throw new IllegalStateException(
-                "Failed to update password: " + e.getMessage(), e);
+                    "Failed to update password: " + e.getMessage(), e);
         }
     }
 
