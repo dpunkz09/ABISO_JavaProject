@@ -192,7 +192,8 @@ CREATE TABLE `users` (
   `email` varchar(120) NOT NULL,
   `password_hash` varchar(100) NOT NULL,
   `role` enum('RESIDENT','STAFF') NOT NULL,
-  `created_at` datetime DEFAULT current_timestamp()
+  `created_at` datetime DEFAULT current_timestamp(),
+  `must_change_password` tinyint(1) NOT NULL DEFAULT 0
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
 --
